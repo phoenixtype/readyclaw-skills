@@ -21,10 +21,10 @@ Or without the marketplace, copy any `skills/<name>/SKILL.md` into `~/.claude/sk
 | `reading-tool-output-cheaply` skill | Trims tool output at the source so it never becomes a permanent passenger |
 | `model-per-task` skill | The cheapest model that does the job; top tier for design, review, hard debugging |
 | `/headroom` command | Runs the local ReadyClaw scan and shows where the tokens went |
-| Guard hooks | Briefs the model at session start; past 200k tokens, asks it to offer /compact or a handoff before continuing. Never blocks or rewrites |
+| Guard hooks | Briefs the model at session start; past 200k tokens, asks it to offer /compact or a handoff before continuing. Blocks a prompt, a Bash command or a file write that carries a credential (API key, token, private key, database URL with password) and says why, so you can rotate it and resend with an env reference instead. Never rewrites anything |
 
-Set `READYCLAW_GUARD_THRESHOLD` (tokens) to change the guard's trigger. The hooks are plain Node with no dependencies.
+Set `READYCLAW_GUARD_THRESHOLD` (tokens) to change the context guard's trigger. Set `READYCLAW_GUARD_SECRETS` to `block` (default), `warn` or `off` to change how the credential check responds. The hooks are plain Node with no dependencies.
 
 ## Privacy
 
-The plugin reads the current session's transcript tail to compute its size. Nothing leaves the machine. MIT licensed.
+The plugin reads the current session's transcript tail to compute its size, and scans each prompt, Bash command and file write for credential-shaped values before they reach the model. Matches are reported masked. Nothing leaves the machine. MIT licensed.
