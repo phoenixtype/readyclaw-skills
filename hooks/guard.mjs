@@ -64,7 +64,7 @@ export function findSecrets(text) {
       if (id === "jwt" && !jwtLongLived(v)) continue;
       if (id === "database-url" && LOCAL_DB.test(v)) continue;
       seen.add(v);
-      out.push({ id, label, masked: /^[a-z+]+:\/\//i.test(v) ? v.replace(/:\/\/([^:]+):[^@]+@/, "://$1:…@").slice(0, 60) : v.length <= 12 ? v.slice(0, 3) + "…" : v.slice(0, 6) + "…" + v.slice(-3) });
+      out.push({ id, label, masked: /^[a-z+]+:\/\//i.test(v) ? v.replace(/:\/\/([^:]+):[^@]+@/, (_m, u) => `://${u.length > 10 ? u.slice(0, 8) + "…" : u}:…@`).slice(0, 60) : v.length <= 12 ? v.slice(0, 3) + "…" : v.slice(0, 6) + "…" + v.slice(-3) });
     }
   }
   const specific = out.filter((o) => o.id !== "generic-secret");
