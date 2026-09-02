@@ -1,0 +1,10 @@
+{
+  "name": "readyclaw",
+  "description": "Spend fewer tokens for the same work in Claude Code: context hygiene, cheap reading, handoffs instead of giant sessions, the right model per task, and a guard that speaks up before a session gets expensive.",
+  "version": "0.1.0",
+  "author": { "name": "ReadyClaw", "email": "hello@readyclaw.app" },
+  "homepage": "https://readyclaw.app/toolkit",
+  "repository": "https://github.com/phoenixtype/readyclaw-skills",
+  "license": "MIT",
+  "keywords": ["claude-code", "tokens", "cost", "context", "skills"]
+}
