@@ -1,7 +1,7 @@
 {
   "name": "readyclaw",
-  "description": "Spend fewer tokens for the same work in Claude Code: context hygiene, cheap reading, handoffs instead of giant sessions, the right model per task, a guard that speaks up before a session gets expensive, and blocks prompts, commands and file writes that carry a credential.",
-  "version": "0.1.2",
+  "description": "Spend fewer tokens for the same work in Claude Code: context hygiene, cheap reading, handoffs instead of giant sessions, the right model per task, a guard that tells Claude Code when to compact, delegate, switch model or plan, and blocks prompts, commands and file writes that carry a credential.",
+  "version": "0.1.3",
   "author": { "name": "ReadyClaw", "email": "hello@readyclaw.app" },
   "homepage": "https://readyclaw.app/toolkit",
   "repository": "https://github.com/phoenixtype/readyclaw-skills",

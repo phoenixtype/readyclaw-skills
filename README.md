@@ -21,9 +21,9 @@ Or without the marketplace, copy any `skills/<name>/SKILL.md` into `~/.claude/sk
 | `reading-tool-output-cheaply` skill | Trims tool output at the source so it never becomes a permanent passenger |
 | `model-per-task` skill | The cheapest model that does the job; top tier for design, review, hard debugging |
 | `/headroom` command | Runs the local ReadyClaw scan and shows where the tokens went |
-| Guard hooks | Briefs the model at session start; past 200k tokens, asks it to offer /compact or a handoff before continuing. Blocks a prompt, a Bash command or a file write that carries a credential (API key, token, private key, database URL with password) and says why, so you can rotate it and resend with an env reference instead. Never rewrites anything |
+| Guard hooks | Briefs the model at session start. On each prompt, reads the tail of the live transcript and tells the model which Claude Code feature the moment calls for: /compact or a handoff past 200k tokens, a fresh session after a cold resume, an Explore subagent after bulk reading, line ranges after re-reading a file, a Sonnet subagent for tool-only loops on the top tier, plan mode for a long build request. Each piece of advice is given once per cooldown per session. Blocks a prompt, a Bash command or a file write that carries a credential (API key, token, private key, database URL with password) and says why, so you can rotate it and resend with an env reference instead. Never rewrites anything |
 
-Set `READYCLAW_GUARD_THRESHOLD` (tokens) to change the context guard's trigger. Set `READYCLAW_GUARD_SECRETS` to `block` (default), `warn` or `off` to change how the credential check responds. The hooks are plain Node with no dependencies.
+Set `READYCLAW_GUARD_THRESHOLD` (tokens) to change the context guard's trigger. Set `READYCLAW_ADVISOR=off` to keep the credential check but silence the advice. Set `READYCLAW_GUARD_SECRETS` to `block` (default), `warn` or `off` to change how the credential check responds. The hooks are plain Node with no dependencies.
 
 ## Privacy
 

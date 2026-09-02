@@ -1,13 +1,13 @@
 {
   "name": "readyclaw",
   "owner": { "name": "ReadyClaw", "email": "hello@readyclaw.app" },
-  "metadata": { "description": "ReadyClaw's plugin for Claude Code: skills, commands and a guard that cut token spend.", "version": "0.1.2" },
+  "metadata": { "description": "ReadyClaw's plugin for Claude Code: skills, commands and a guard that cut token spend.", "version": "0.1.3" },
   "plugins": [
     {
       "name": "readyclaw",
       "source": { "source": "url", "url": "https://github.com/phoenixtype/readyclaw-skills.git" },
-      "description": "Context hygiene, cheap reading, handoffs, model-per-task, and the context guard.",
-      "version": "0.1.2",
+      "description": "Context hygiene, cheap reading, handoffs, model-per-task, and the context guard and advisor.",
+      "version": "0.1.3",
       "strict": true
     }
   ]

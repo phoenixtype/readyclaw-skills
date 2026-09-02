@@ -1,12 +1,18 @@
 #!/usr/bin/env node
-// ReadyClaw guard (plugin copy). Two jobs, no dependencies:
-//  1. Context: when the live session has grown past the threshold, tell the model so it
-//     can offer /compact or a fresh session.
+// ReadyClaw guard (plugin copy). Three jobs, no dependencies:
+//  1. Advisor: read the tail of the live transcript on every prompt and tell the model
+//     which Claude Code feature the moment calls for: /compact past the threshold, a fresh
+//     session after a cold resume, an Explore subagent after bulk reading, line ranges
+//     after re-reads, a Sonnet subagent for tool-only loops, plan mode for big asks.
+//     Each note is rate-limited per session so it is said once, not every turn.
 //  2. Secrets: stop credentials leaving the machine. A prompt, a Bash command or a file
 //     write that carries an API key / token / private key is blocked with a reason, before
 //     it reaches the model. Mode via READYCLAW_GUARD_SECRETS=block|warn|off (default block).
+//  3. Session start: a short brief on context hygiene.
 // Never rewrites anything; the user can resend with the value replaced by an env reference.
-import { readFileSync, openSync, readSync, fstatSync, closeSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, openSync, readSync, fstatSync, closeSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 
@@ -71,7 +77,8 @@ export function findSecrets(text) {
   return specific.length ? specific : out;
 }
 
-function lastContext(transcriptPath) {
+/** The last 512KB of a transcript as parsed records (main conversation only), oldest first. */
+function tailRecords(transcriptPath) {
   let fd;
   try {
     fd = openSync(transcriptPath, "r");
@@ -79,16 +86,115 @@ function lastContext(transcriptPath) {
     const len = Math.min(size, 512 * 1024);
     const buf = Buffer.alloc(len);
     readSync(fd, buf, 0, len, size - len);
-    for (const line of buf.toString("utf8").split("\n").reverse()) {
-      if (!line.includes('"assistant"')) continue;
-      try {
-        const o = JSON.parse(line);
-        const u = o && o.message && o.message.usage;
-        if (u) return (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0);
-      } catch {}
+    const lines = buf.toString("utf8").split("\n");
+    if (len < size) lines.shift(); // a partial first line
+    return parseRecords(lines);
+  } catch { return []; } finally { if (fd !== undefined) closeSync(fd); }
+}
+
+/** JSONL lines to the shape the advisor reads. Exported for tests. */
+export function parseRecords(lines) {
+  const out = [];
+  for (const line of lines) {
+    if (!line || !(line.includes('"assistant"') || line.includes("tool_result"))) continue;
+    let o;
+    try { o = JSON.parse(line); } catch { continue; }
+    if (!o || o.isSidechain === true || !o.message) continue;
+    const ts = Date.parse(o.timestamp || "") || 0;
+    const content = Array.isArray(o.message.content) ? o.message.content : [];
+    if (o.type === "assistant" && o.message.usage) {
+      const u = o.message.usage;
+      out.push({
+        type: "assistant", ts, model: String(o.message.model || ""),
+        ctx: (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0),
+        hasText: content.some((b) => b && b.type === "text" && String(b.text || "").trim()),
+        tools: content.filter((b) => b && b.type === "tool_use").map((b) => ({ id: b.id, name: b.name, path: b.name === "Read" && b.input && typeof b.input.file_path === "string" ? b.input.file_path : null })),
+      });
+    } else if (o.type === "user") {
+      let chars = 0;
+      for (const b of content) {
+        if (!b || b.type !== "tool_result") continue;
+        if (typeof b.content === "string") chars += b.content.length;
+        else if (Array.isArray(b.content)) for (const part of b.content) if (part && typeof part.text === "string") chars += part.text.length;
+      }
+      if (chars) out.push({ type: "result", ts, chars });
     }
-  } catch {} finally { if (fd !== undefined) closeSync(fd); }
-  return 0;
+  }
+  return out;
+}
+
+const MINUTE = 60000;
+// How long each piece of advice stays quiet after it is given, per session.
+const COOLDOWN_MS = { compact: 10 * MINUTE, "cold-resume": 6 * 60 * MINUTE, "bulk-reading": 20 * MINUTE, reread: 20 * MINUTE, "mechanical-loop": 30 * MINUTE, "plan-mode": 24 * 60 * MINUTE };
+const RECENT = 6;
+const k = (n) => Math.round(n / 1000) + "k";
+
+/**
+ * Which Claude Code feature this moment calls for, from recent activity. Pure: takes the
+ * parsed tail, the prompt and the per-session state, returns [{key, text}] (at most two)
+ * plus the state to persist. Exported for tests.
+ */
+export function advise({ records, prompt = "", nowMs = Date.now(), threshold = THRESHOLD, state = {} }) {
+  const notes = [];
+  const next = { ...state };
+  const due = (key) => !(next[key] && nowMs - next[key] < COOLDOWN_MS[key]);
+  const say = (key, text) => { if (due(key) && notes.length < 2) { notes.push({ key, text: "ReadyClaw advisor: " + text }); next[key] = nowMs; } };
+
+  const turns = records.filter((r) => r.type === "assistant");
+  const last = turns[turns.length - 1];
+  const ctx = last ? last.ctx : 0;
+  const model = last ? last.model : "";
+  const topTier = /opus|fable|mythos/.test(model);
+
+  if (ctx > threshold) {
+    say("compact", "this session's context is about " + k(ctx) + " tokens, above the " + k(threshold) + " threshold. Every turn re-reads all of it. Before continuing, tell the user the size and offer to run /compact or to start a fresh session from a short handoff (/handoff); then proceed with their request.");
+  }
+  if (last && last.ts && nowMs - last.ts > 60 * MINUTE && ctx > 100000) {
+    const hours = Math.round((nowMs - last.ts) / (60 * MINUTE) * 10) / 10;
+    say("cold-resume", "the session was idle for " + hours + "h, so the prompt cache is cold and this turn re-uploads about " + k(ctx) + " tokens at the write rate. If this prompt starts a new task, suggest a fresh session from a short handoff instead of continuing here.");
+  }
+  const recent = turns.slice(-RECENT);
+  const recentIdx = records.indexOf(recent[0]);
+  const recentResults = recentIdx >= 0 ? records.slice(recentIdx).filter((r) => r.type === "result") : [];
+  const resultChars = recentResults.reduce((s, r) => s + r.chars, 0);
+  const reads = recent.reduce((n, t) => n + t.tools.filter((x) => x.name === "Read").length, 0);
+  if (resultChars > 40000 || reads >= 4) {
+    say("bulk-reading", "the last " + recent.length + " turns pulled about " + k(resultChars / 4) + " tokens of tool output into context" + (reads ? " (" + reads + " Read calls)" : "") + ", and every later turn re-reads it. For bulk reading use an Explore subagent (Agent tool, subagent_type Explore) and keep only its summary; for the rest use head, tail, grep, or line ranges.");
+  }
+  const counts = new Map();
+  for (const t of turns) for (const x of t.tools) if (x.path) counts.set(x.path, (counts.get(x.path) || 0) + 1);
+  const rereads = [...counts].filter(([, n]) => n >= 3).sort((a, b) => b[1] - a[1]);
+  if (rereads.length) {
+    const [path, n] = rereads[0];
+    say("reread", path.split("/").slice(-2).join("/") + " has been read " + n + " times this session and is already in context. After an edit, re-read only the changed line range; Edit and Write confirm their own result.");
+  }
+  const loop = turns.slice(-8);
+  if (topTier && loop.length >= 6 && loop.every((t) => t.tools.length > 0 && !t.hasText)) {
+    say("mechanical-loop", "the last " + loop.length + " turns were tool-only (an edit, run, fix loop) on " + model.replace("claude-", "") + ". That work costs the same on a cheaper model: hand the loop to a Sonnet subagent (Agent tool with model sonnet) or tell the user they can switch model for this stretch and come back to the top tier for design and review.");
+  }
+  const p = String(prompt);
+  if (p.length >= 400 && /\b(implement|build|add|create|refactor|migrate|redesign|rewrite)\b/i.test(p) && ctx < 60000) {
+    say("plan-mode", "this looks like multi-file work. Plan before touching code (EnterPlanMode, or the user can press shift+tab into plan mode) so exploration and decisions are settled before edits pile into the context.");
+  }
+  return { notes, state: next };
+}
+
+const STATE_FILE = join(homedir(), ".readyclaw", "advisor-state.json");
+function readState(sessionId) {
+  try { return JSON.parse(readFileSync(STATE_FILE, "utf8"))[sessionId] || {}; } catch { return {}; }
+}
+function writeState(sessionId, state) {
+  try {
+    let all = {};
+    try { all = JSON.parse(readFileSync(STATE_FILE, "utf8")); } catch {}
+    all[sessionId] = state;
+    // Keep the file small: the 40 most recently advised sessions.
+    const ids = Object.keys(all).sort((a, b) => Math.max(0, ...Object.values(all[b])) - Math.max(0, ...Object.values(all[a]))).slice(0, 40);
+    const kept = {};
+    for (const id of ids) kept[id] = all[id];
+    mkdirSync(join(homedir(), ".readyclaw"), { recursive: true, mode: 0o700 });
+    writeFileSync(STATE_FILE, JSON.stringify(kept));
+  } catch {}
 }
 
 const describe = (found) => found.slice(0, 3).map((f) => `${f.label} (${f.masked})`).join(", ") + (found.length > 3 ? ` and ${found.length - 3} more` : "");
@@ -101,7 +207,7 @@ function main() {
 
   if (event === "session-start") {
     emit({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext:
-      "ReadyClaw guard is on. Keep tool output small (head/tail/grep, line ranges, subagents for bulk reading), read each file once, never print or paste credentials (reference env var names instead), and offer /compact or a fresh session with a handoff when a task finishes." } });
+      "ReadyClaw guard is on. Keep tool output small (head/tail/grep, line ranges, subagents for bulk reading), read each file once, never print or paste credentials (reference env var names instead), and offer /compact or a fresh session with a handoff when a task finishes. Notes prefixed 'ReadyClaw advisor:' arrive with some prompts; act on them and mention the suggestion to the user in one sentence." } });
   } else if (event === "prompt") {
     const found = SECRETS_MODE === "off" ? [] : findSecrets(String(input.prompt || ""));
     if (found.length && SECRETS_MODE === "block") {
@@ -110,10 +216,13 @@ function main() {
     }
     const notes = [];
     if (found.length) notes.push(`ReadyClaw guard: the prompt contains ${describe(found)}. Do not echo it, do not write it to any file, and tell the user to rotate it and use an env reference instead.`);
-    const ctx = input.transcript_path ? lastContext(input.transcript_path) : 0;
-    if (ctx > THRESHOLD) {
-      const k = Math.round(ctx / 1000);
-      notes.push("ReadyClaw guard: this session's context is about " + k + "k tokens, above the " + Math.round(THRESHOLD / 1000) + "k threshold. Every turn re-reads all of it. Before continuing, tell the user the size and offer to run /compact or to start a fresh session from a short handoff (/handoff); then proceed with their request.");
+    if (input.transcript_path && process.env.READYCLAW_ADVISOR !== "off") {
+      const sessionId = String(input.session_id || input.transcript_path);
+      const { notes: advice, state } = advise({ records: tailRecords(input.transcript_path), prompt: String(input.prompt || ""), state: readState(sessionId) });
+      if (advice.length) {
+        for (const a of advice) notes.push(a.text);
+        writeState(sessionId, state);
+      }
     }
     if (notes.length) emit({ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: notes.join("\n\n") } });
   } else if (event === "pre-tool") {
